@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Fichiers generes par les scripts de geometrie.
+**/*.png
+**/*_cotes.csv
+**/*_salome.py
+**/.~lock*
