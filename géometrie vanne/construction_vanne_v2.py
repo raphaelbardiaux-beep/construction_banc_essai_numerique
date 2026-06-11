@@ -1767,16 +1767,49 @@ tracer_ovoide = tracer
 def exporter_salome_circulaire(
     construction: ConstructionVanneCirculaire,
     chemin: str | Path = "construction_vanne_ci_salome.py",
+    position_vanne: str = "ouverte",
 ) -> Path:
     chemin = _chemin_sortie(chemin)
     circulaire = Circulaire(construction.DN)
+    y_bas_joues = circulaire.rayon - math.sqrt(
+        max(0.0, circulaire.rayon**2 - (construction.b_w / 2.0) ** 2)
+    )
     elements = [
         ("face", "conduite", [(p.x, p.y) for p in circulaire.contour()]),
+        *_faces_joues_laterales(
+            circulaire.largeur,
+            y_bas_joues,
+            construction.y_haut,
+            [
+                (y_bas_joues, construction.b_w),
+                (construction.y_haut, construction.b_w),
+            ],
+        ),
+        (
+            "face",
+            "volet_inferieur",
+            _points_rectangle_centre_dans_cercle_avec_orifice(
+                circulaire,
+                construction.y_volet,
+                construction.b_w,
+                construction.aG,
+                construction.b_G,
+            ),
+        ),
+        (
+            "face",
+            "pale_haute",
+            _points_rectangle_centre(
+                construction.y_pale_bas,
+                construction.y_haut,
+                construction.b_up,
+            ),
+        ),
     ]
     lignes = [
         (
             "trait_orifice",
-            _segment_centre(circulaire.largeur(construction.aG), construction.aG),
+            _segment_centre(construction.b_G, construction.aG),
         ),
         (
             "trait_seuil",
@@ -1794,19 +1827,50 @@ def exporter_salome_circulaire(
         ),
         ("trait_haut_pale", _segment_centre(construction.b_up, construction.y_haut)),
     ]
-    _ecrire_script_salome(chemin, "circulaire", construction.lignes_csv(), elements, lignes)
+    _ecrire_script_salome(chemin, "circulaire", construction.lignes_csv(), elements, lignes, position_vanne)
     return chemin
 
 
 def exporter_salome_ovoide(
     construction: ConstructionVanneOvoide,
     chemin: str | Path = "construction_vanne_ov_salome.py",
+    position_vanne: str = "ouverte",
 ) -> Path:
     chemin = _chemin_sortie(chemin)
     ovoide = Ovoide(hauteur_totale=construction.T)
-    largeur_pale = ovoide.largeur(construction.y_haut)
+    largeur_pale = construction.b_w
     elements = [
         ("face", "conduite", [(p.x, p.y) for p in ovoide.contour()]),
+        *_faces_joues_laterales(
+            ovoide.largeur,
+            construction.y_orifice,
+            construction.y_haut,
+            [
+                (construction.y_orifice, construction.b_s),
+                (construction.y_axe_bas, largeur_pale),
+                (construction.y_haut, largeur_pale),
+            ],
+        ),
+        (
+            "face",
+            "volet_inferieur",
+            _points_volet_ovoide(
+                construction.y_orifice,
+                construction.y_axe_bas,
+                construction.y_volet,
+                construction.b_s,
+                largeur_pale,
+            ),
+        ),
+        (
+            "face",
+            "pale_haute",
+            _points_rectangle_centre(
+                construction.y_pale_bas,
+                construction.y_haut,
+                largeur_pale,
+            ),
+        ),
     ]
     lignes = [
         (
@@ -1843,13 +1907,53 @@ def exporter_salome_ovoide(
         ),
         ("trait_haut_pale", _segment_centre(largeur_pale, construction.y_haut)),
     ]
-    _ecrire_script_salome(chemin, "ovoide", construction.lignes_csv(), elements, lignes)
+    _ecrire_script_salome(chemin, "ovoide", construction.lignes_csv(), elements, lignes, position_vanne)
     return chemin
 
 
 def _points_rectangle_centre(y0: float, y1: float, largeur: float) -> list[tuple[float, float]]:
     demi = largeur / 2.0
     return [(-demi, y0), (demi, y0), (demi, y1), (-demi, y1)]
+
+
+def _faces_joues_laterales(
+    largeur_section,
+    y_bas: float,
+    y_haut: float,
+    largeurs_interieures: list[tuple[float, float]],
+    nb_points: int = 80,
+) -> list[tuple[str, str, list[tuple[float, float]]]]:
+    if y_haut <= y_bas:
+        return []
+    profils = sorted(largeurs_interieures)
+    if len(profils) < 2:
+        raise ValueError("Il faut au moins deux largeurs interieures pour creer les joues.")
+
+    def demi_interieur(y: float) -> float:
+        if y <= profils[0][0]:
+            return profils[0][1] / 2.0
+        for (y0, l0), (y1, l1) in zip(profils, profils[1:]):
+            if y <= y1:
+                if abs(y1 - y0) <= 1e-12:
+                    return l1 / 2.0
+                t = (y - y0) / (y1 - y0)
+                return (l0 + (l1 - l0) * t) / 2.0
+        return profils[-1][1] / 2.0
+
+    ys_uniformes = [
+        y_bas + (y_haut - y_bas) * index / nb_points
+        for index in range(nb_points + 1)
+    ]
+    ys_ruptures = [y for y, _ in profils if y_bas <= y <= y_haut]
+    ys = sorted({round(y, 12) for y in [*ys_uniformes, *ys_ruptures]})
+    droite_exterieure = [(largeur_section(y) / 2.0, y) for y in ys]
+    droite_interieure = [(demi_interieur(y), y) for y in reversed(ys)]
+    gauche_exterieure = [(-largeur_section(y) / 2.0, y) for y in reversed(ys)]
+    gauche_interieure = [(-demi_interieur(y), y) for y in ys]
+    return [
+        ("face", "joue_laterale_droite", droite_exterieure + droite_interieure),
+        ("face", "joue_laterale_gauche", gauche_exterieure + gauche_interieure),
+    ]
 
 
 def _segment_centre(largeur: float, y: float) -> list[tuple[float, float]]:
@@ -1881,6 +1985,25 @@ def _points_trapeze_centre(
     return [(-demi_bas, y0), (demi_bas, y0), (demi_haut, y1), (-demi_haut, y1)]
 
 
+def _points_volet_ovoide(
+    y_orifice: float,
+    y_axe_bas: float,
+    y_volet: float,
+    largeur_orifice: float,
+    largeur_volet: float,
+) -> list[tuple[float, float]]:
+    demi_orifice = largeur_orifice / 2.0
+    demi_volet = largeur_volet / 2.0
+    return [
+        (-demi_orifice, y_orifice),
+        (demi_orifice, y_orifice),
+        (demi_volet, y_axe_bas),
+        (demi_volet, y_volet),
+        (-demi_volet, y_volet),
+        (-demi_volet, y_axe_bas),
+    ]
+
+
 def _points_rectangle_centre_dans_cercle(
     circulaire: Circulaire,
     y_haut: float,
@@ -1900,15 +2023,55 @@ def _points_rectangle_centre_dans_cercle(
     return points
 
 
+def _points_rectangle_centre_dans_cercle_avec_orifice(
+    circulaire: Circulaire,
+    y_haut: float,
+    largeur: float,
+    hauteur_orifice: float,
+    largeur_orifice: float,
+    nb_points: int = 80,
+) -> list[tuple[float, float]]:
+    demi = largeur / 2.0
+    demi_orifice = largeur_orifice / 2.0
+    if demi > circulaire.rayon:
+        raise ValueError("La demi-largeur du volet depasse le rayon de la conduite.")
+    if demi_orifice > demi:
+        raise ValueError("La demi-largeur de l'orifice depasse celle du volet.")
+
+    y_bas_cote = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - demi**2))
+    y_bas_orifice = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - demi_orifice**2))
+    if hauteur_orifice <= y_bas_orifice:
+        return _points_rectangle_centre_dans_cercle(circulaire, y_haut, largeur, nb_points)
+
+    points = [(-demi, y_haut), (demi, y_haut), (demi, y_bas_cote)]
+    for index in range(nb_points + 1):
+        x = demi - (demi - demi_orifice) * index / nb_points
+        y = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - x**2))
+        points.append((x, y))
+    points.extend(
+        [
+            (demi_orifice, hauteur_orifice),
+            (-demi_orifice, hauteur_orifice),
+        ]
+    )
+    for index in range(nb_points + 1):
+        x = -demi_orifice - (demi - demi_orifice) * index / nb_points
+        y = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - x**2))
+        points.append((x, y))
+    points.append((-demi, y_bas_cote))
+    return points
+
+
 def _ecrire_script_salome(
     chemin: Path,
     section: str,
     cotes: list[tuple[str, float]],
     elements: list[tuple[str, str, list[tuple[float, float]]]],
     lignes: list[tuple[str, list[tuple[float, float]]]],
+    position_vanne: str,
 ) -> None:
     chemin.parent.mkdir(parents=True, exist_ok=True)
-    texte = _script_salome(section, cotes, elements, lignes)
+    texte = _script_salome(section, cotes, elements, lignes, position_vanne)
     chemin.write_text(texte, encoding="utf-8")
 
 
@@ -1917,6 +2080,7 @@ def _script_salome(
     cotes: list[tuple[str, float]],
     elements: list[tuple[str, str, list[tuple[float, float]]]],
     lignes: list[tuple[str, list[tuple[float, float]]]],
+    position_vanne: str,
 ) -> str:
     return f'''# Script genere par construction_vanne.py.
 # A lancer dans le Python de SALOME.
@@ -1924,6 +2088,7 @@ def _script_salome(
 import salome
 salome.salome_init()
 
+import math
 from salome.geom import geomBuilder
 
 geompy = geomBuilder.New()
@@ -1932,11 +2097,22 @@ SECTION = {section!r}
 COTES = {_format_salome_cotes(cotes)}
 ELEMENTS = {_format_salome_elements(elements)}
 LIGNES = {_format_salome_lignes(lignes)}
+POSITION_VANNE = {position_vanne!r}
+EPAISSEUR_VANNE_X = 0.01
+EPAISSEUR_JOUE_Y = 0.01
+MARGE_AVAL_JOUE = 0.01
+ANGLE_VANNE_DEGRE = 70.0
+NOMS_FACES_VANNE = {{"volet_inferieur", "pale_haute"}}
+NOMS_FACES_JOUES = {{"joue_laterale_gauche", "joue_laterale_droite"}}
 
 
 def vertex(point):
     y, z = point
     return geompy.MakeVertex(0.0, float(y), float(z))
+
+
+def vertex_xyz(x, y, z):
+    return geompy.MakeVertex(float(x), float(y), float(z))
 
 
 def distance2(a, b):
@@ -1993,23 +2169,342 @@ def line_from_points(name, points):
     return wire
 
 
+def line_xyz_from_points(points):
+    vertices = [vertex_xyz(*point) for point in points]
+    edges = []
+    for index in range(len(vertices) - 1):
+        edges.append(geompy.MakeLineTwoPnt(vertices[index], vertices[index + 1]))
+    try:
+        return geompy.MakeWire(edges)
+    except TypeError:
+        return geompy.MakeWire(edges, 1e-7)
+
+
+def extruder_x(objet, longueur):
+    try:
+        return geompy.MakePrismDXDYDZ(objet, float(longueur), 0.0, 0.0)
+    except AttributeError:
+        vecteur = geompy.MakeVectorDXDYDZ(float(longueur), 0.0, 0.0)
+    return geompy.MakePrismVecH(objet, vecteur, 1.0)
+
+
+def extruder_z(objet, longueur):
+    try:
+        return geompy.MakePrismDXDYDZ(objet, 0.0, 0.0, float(longueur))
+    except AttributeError:
+        vecteur = geompy.MakeVectorDXDYDZ(0.0, 0.0, float(longueur))
+    return geompy.MakePrismVecH(objet, vecteur, 1.0)
+
+
+def face_xy_rectangle(x_centre, y_centre, largeur_x, largeur_y, z):
+    demi_x = largeur_x / 2.0
+    demi_y = largeur_y / 2.0
+    return face_xyz_from_points(
+        "rectangle_xy",
+        [
+            (x_centre - demi_x, y_centre - demi_y, z),
+            (x_centre + demi_x, y_centre - demi_y, z),
+            (x_centre + demi_x, y_centre + demi_y, z),
+            (x_centre - demi_x, y_centre + demi_y, z),
+        ],
+    )
+
+
+def face_xyz_from_points(name, points):
+    vertices = [vertex_xyz(*point) for point in points]
+    edges = []
+    for index in range(len(vertices)):
+        edges.append(geompy.MakeLineTwoPnt(vertices[index], vertices[(index + 1) % len(vertices)]))
+    try:
+        wire = geompy.MakeWire(edges)
+    except TypeError:
+        wire = geompy.MakeWire(edges, 1e-7)
+    try:
+        return geompy.MakeFaceWires([wire], 1)
+    except TypeError:
+        return geompy.MakeFace(wire, 1)
+
+
+COTES_DICT = dict(COTES)
+TRANSLATION_Z = 1.5 * COTES_DICT.get("DN", COTES_DICT.get("T", 1.0))
+
+
+def lignes_avec_trait_orifice_force(lignes):
+    z_orifice = COTES_DICT.get("z_orifice", COTES_DICT.get("y_orifice", COTES_DICT.get("aG")))
+    if z_orifice is None:
+        return lignes
+    if SECTION == "circulaire" and "b_G" in COTES_DICT:
+        demi = COTES_DICT["b_G"] / 2.0
+        return [
+            (name, [(-demi, z_orifice), (demi, z_orifice)])
+            if name == "trait_orifice" and len(points) >= 2
+            else (name, points)
+            for name, points in lignes
+        ]
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    intersections = []
+    if points_conduite:
+        for index, (y0, z0) in enumerate(points_conduite):
+            y1, z1 = points_conduite[(index + 1) % len(points_conduite)]
+            if abs(z1 - z0) <= 1e-12:
+                if abs(z_orifice - z0) <= 1e-12:
+                    intersections.extend([y0, y1])
+                continue
+            if min(z0, z1) - 1e-12 <= z_orifice <= max(z0, z1) + 1e-12:
+                t = (z_orifice - z0) / (z1 - z0)
+                if -1e-12 <= t <= 1.0 + 1e-12:
+                    intersections.append(y0 + (y1 - y0) * t)
+    if len(intersections) >= 2:
+        y_gauche = min(intersections)
+        y_droite = max(intersections)
+    else:
+        y_gauche = min(points[0][0] for name, points in lignes if name == "trait_orifice")
+        y_droite = max(points[-1][0] for name, points in lignes if name == "trait_orifice")
+    lignes_corrigees = []
+    for name, points in lignes:
+        if name == "trait_orifice" and len(points) >= 2:
+            lignes_corrigees.append((name, [(y_gauche, z_orifice), (y_droite, z_orifice)]))
+        else:
+            lignes_corrigees.append((name, points))
+    return lignes_corrigees
+
+
+def demi_largeur_conduite(z):
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    intersections = []
+    for index, (y0, z0) in enumerate(points_conduite):
+        y1, z1 = points_conduite[(index + 1) % len(points_conduite)]
+        if abs(z1 - z0) <= 1e-12:
+            if abs(z - z0) <= 1e-12:
+                intersections.extend([y0, y1])
+            continue
+        if min(z0, z1) - 1e-12 <= z <= max(z0, z1) + 1e-12:
+            t = (z - z0) / (z1 - z0)
+            if -1e-12 <= t <= 1.0 + 1e-12:
+                intersections.append(y0 + (y1 - y0) * t)
+    if len(intersections) < 2:
+        return 0.0
+    return max(abs(min(intersections)), abs(max(intersections)))
+
+
+def face_debit_rectangulaire(z_bas, z_haut, largeur):
+    demi = largeur / 2.0
+    return face_from_points(
+        "face_debit",
+        [(-demi, z_bas), (demi, z_bas), (demi, z_haut), (-demi, z_haut)],
+    )
+
+
+def face_debit_orifice(z_limite):
+    if SECTION == "circulaire" and "b_G" in COTES_DICT:
+        demi = COTES_DICT["b_G"] / 2.0
+        return face_from_points(
+            "orifice_debit",
+            [(-demi, 0.0), (demi, 0.0), (demi, z_limite), (-demi, z_limite)],
+        )
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    points_clippes = []
+    for index, point0 in enumerate(points_conduite):
+        point1 = points_conduite[(index + 1) % len(points_conduite)]
+        y0, z0 = point0
+        y1, z1 = point1
+        dedans0 = z0 <= z_limite + 1e-12
+        dedans1 = z1 <= z_limite + 1e-12
+        if dedans0:
+            points_clippes.append(point0)
+        if dedans0 != dedans1 and abs(z1 - z0) > 1e-12:
+            t = (z_limite - z0) / (z1 - z0)
+            points_clippes.append((y0 + (y1 - y0) * t, z_limite))
+    return face_from_points("orifice_debit", points_clippes)
+
+
+def face_debit_surverse(z_limite):
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    points_clippes = []
+    for index, point0 in enumerate(points_conduite):
+        point1 = points_conduite[(index + 1) % len(points_conduite)]
+        y0, z0 = point0
+        y1, z1 = point1
+        dedans0 = z0 >= z_limite - 1e-12
+        dedans1 = z1 >= z_limite - 1e-12
+        if dedans0:
+            points_clippes.append(point0)
+        if dedans0 != dedans1 and abs(z1 - z0) > 1e-12:
+            t = (z_limite - z0) / (z1 - z0)
+            points_clippes.append((y0 + (y1 - y0) * t, z_limite))
+    return face_from_points("Surverse_debit", points_clippes)
+
+
+def chemin_haut_conduite(z_limite):
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    points_clippes = []
+    for index, point0 in enumerate(points_conduite):
+        point1 = points_conduite[(index + 1) % len(points_conduite)]
+        y0, z0 = point0
+        y1, z1 = point1
+        dedans0 = z0 >= z_limite - 1e-12
+        dedans1 = z1 >= z_limite - 1e-12
+        if dedans0:
+            points_clippes.append(point0)
+        if dedans0 != dedans1 and abs(z1 - z0) > 1e-12:
+            t = (z_limite - z0) / (z1 - z0)
+            points_clippes.append((y0 + (y1 - y0) * t, z_limite))
+    points_sur_limite = [
+        (index, point)
+        for index, point in enumerate(points_clippes)
+        if abs(point[1] - z_limite) <= 1e-9
+    ]
+    if len(points_sur_limite) < 2:
+        return points_clippes
+    index_droit, _ = max(points_sur_limite, key=lambda item: item[1][0])
+    index_gauche, _ = min(points_sur_limite, key=lambda item: item[1][0])
+    if index_droit <= index_gauche:
+        chemin = points_clippes[index_droit : index_gauche + 1]
+    else:
+        chemin = points_clippes[index_droit:] + points_clippes[: index_gauche + 1]
+    return nettoyer_points(chemin, closed=False)
+
+
+def face_debit_surverse_sans_joues(z_bas, z_haut_joues, largeur_interieure):
+    chemin_haut = chemin_haut_conduite(z_haut_joues)
+    if len(chemin_haut) < 2:
+        return face_debit_surverse(z_bas)
+    demi = largeur_interieure / 2.0
+    points = [
+        (demi, z_bas),
+        (demi, z_haut_joues),
+        *chemin_haut,
+        (-demi, z_haut_joues),
+        (-demi, z_bas),
+    ]
+    return face_from_points("Surverse_debit", nettoyer_points(points))
+
+
+def chemin_bas_conduite(z_limite):
+    points_conduite = []
+    for _, name, points in ELEMENTS:
+        if name == "conduite":
+            points_conduite = points
+            break
+    points_clippes = []
+    for index, point0 in enumerate(points_conduite):
+        point1 = points_conduite[(index + 1) % len(points_conduite)]
+        y0, z0 = point0
+        y1, z1 = point1
+        dedans0 = z0 <= z_limite + 1e-12
+        dedans1 = z1 <= z_limite + 1e-12
+        if dedans0:
+            points_clippes.append(point0)
+        if dedans0 != dedans1 and abs(z1 - z0) > 1e-12:
+            t = (z_limite - z0) / (z1 - z0)
+            points_clippes.append((y0 + (y1 - y0) * t, z_limite))
+    points_sur_limite = [
+        (index, point)
+        for index, point in enumerate(points_clippes)
+        if abs(point[1] - z_limite) <= 1e-9
+    ]
+    if len(points_sur_limite) < 2:
+        return points_clippes
+    index_droit, point_droit = max(points_sur_limite, key=lambda item: item[1][0])
+    index_gauche, point_gauche = min(points_sur_limite, key=lambda item: item[1][0])
+    chemin = [point_droit]
+    chemin.extend(reversed(points_clippes[:index_droit]))
+    branche_gauche = list(reversed(points_clippes[index_gauche + 1 :]))
+    if chemin and branche_gauche and distance2(chemin[-1], branche_gauche[0]) <= 1e-18:
+        branche_gauche = branche_gauche[1:]
+    chemin.extend(branche_gauche)
+    chemin.append(point_gauche)
+    return nettoyer_points(chemin, closed=False)
+
+
+def face_debit_orifice_sans_joues(z_limite, z_axe, z_volet, largeur_basse, largeur_haute):
+    chemin_bas = chemin_bas_conduite(z_limite)
+    if len(chemin_bas) < 2:
+        return face_debit_orifice(z_limite)
+    demi_bas = largeur_basse / 2.0
+    demi_haut = largeur_haute / 2.0
+    points = [
+        (demi_haut, z_volet),
+        (demi_haut, z_axe),
+        (demi_bas, z_limite),
+        *chemin_bas,
+        (-demi_bas, z_limite),
+        (-demi_haut, z_axe),
+        (-demi_haut, z_volet),
+    ]
+    return face_from_points("orifice_debit", nettoyer_points(points))
+
+
+def face_debit_orifice_circulaire_ouverte(z_haut, largeur_interieure, nb_points=80):
+    rayon = COTES_DICT["DN"] / 2.0
+    demi = largeur_interieure / 2.0
+    if demi > rayon:
+        raise RuntimeError("La demi-largeur de orifice_debit depasse le rayon circulaire.")
+    z_bas_cote = rayon - math.sqrt(max(0.0, rayon**2 - demi**2))
+    points = [(-demi, z_haut), (demi, z_haut), (demi, z_bas_cote)]
+    for index in range(nb_points + 1):
+        y = demi - 2.0 * demi * index / nb_points
+        z = rayon - math.sqrt(max(0.0, rayon**2 - y**2))
+        points.append((y, z))
+    points.append((-demi, z_bas_cote))
+    return face_from_points("orifice_debit", nettoyer_points(points))
+
+
+LIGNES = lignes_avec_trait_orifice_force(LIGNES)
+
+
+def translater_scene(objet):
+    return geompy.MakeTranslation(objet, 0.0, 0.0, TRANSLATION_Z)
+
+
 objets = []
+objets_2d = []
+objets_solides = []
 faces = []
+faces_nommees = []
+faces_joues = []
+face_conduite = None
 traits_construction = []
+bati_solide = None
+longueur_joue = None
 for nature, name, points in ELEMENTS:
     if nature == "face":
         objet = face_from_points(name, points)
         faces.append(objet)
+        faces_nommees.append((name, objet))
+        if name == "conduite":
+            face_conduite = objet
+        if name in NOMS_FACES_JOUES:
+            faces_joues.append(objet)
     else:
         objet = wire_from_points(name, points)
     if objet is not None:
-        objets.append(objet)
+        objets_2d.append(objet)
 
 for name, points in LIGNES:
     objet = line_from_points(name, points)
     if objet is not None:
         traits_construction.append(objet)
-        objets.append(objet)
 
 points_reference = [point for _, _, points in ELEMENTS for point in points]
 largeur_reference = max(abs(x) for x, _ in points_reference) if points_reference else 1.0
@@ -2022,22 +2517,203 @@ geompy.addToStudy(repere_x, "axe_X")
 geompy.addToStudy(repere_y, "axe_Y")
 geompy.addToStudy(repere_z, "axe_Z")
 
-if faces and traits_construction:
-    try:
-        assemblage = geompy.MakePartition(
-            faces,
-            traits_construction,
-            [],
-            [],
-            geompy.ShapeType["FACE"],
-            0,
-            [],
-            0,
+if face_conduite is not None:
+    longueur_reference_conduite = COTES_DICT.get("DN", COTES_DICT.get("T", hauteur_reference))
+    longueur_amont = 10.0 * longueur_reference_conduite
+    facteur_aval = 5.0 if POSITION_VANNE == "fermee" else 10.0
+    longueur_aval = facteur_aval * longueur_reference_conduite
+    conduite_amont = extruder_x(face_conduite, -longueur_amont)
+    conduite_aval = extruder_x(face_conduite, longueur_aval)
+    cote_regard = 0.25 * longueur_reference_conduite
+    hauteur_regard = longueur_reference_conduite
+    z_base_regard = 0.95 * longueur_reference_conduite
+    positions_regards = [-3.0, 3.0, -8.0]
+    if POSITION_VANNE == "ouverte":
+        positions_regards.append(8.0)
+    regards = []
+    for position_regard in positions_regards:
+        face_regard = face_xy_rectangle(
+            position_regard * longueur_reference_conduite,
+            0.0,
+            cote_regard,
+            cote_regard,
+            z_base_regard,
         )
+        regards.append(extruder_z(face_regard, hauteur_regard))
+    solides_conduite = [conduite_amont, conduite_aval, *regards]
+    try:
+        conduite = geompy.MakeFuseList(solides_conduite, True, True)
     except Exception:
-        assemblage = geompy.MakeCompound(objets)
+        conduite = geompy.MakeCompound(solides_conduite)
+    conduite = translater_scene(conduite)
+    objets_solides.append(conduite)
+    geompy.addToStudy(conduite, "conduite")
+
+points_vanne = [
+    point
+    for _, name, points in ELEMENTS
+    if name in NOMS_FACES_VANNE
+    for point in points
+]
+solides_vanne_fermee = []
+solides_vanne_ouverte = []
+angle_vanne = math.radians(ANGLE_VANNE_DEGRE)
+z_rotation = COTES_DICT.get("z_axe_bas", COTES_DICT.get("y_axe_bas", hauteur_reference))
+demi_largeur_axe = max(abs(y) for y, _ in points_vanne) if points_vanne else largeur_reference
+x_axe_rotation = EPAISSEUR_VANNE_X / 2.0
+axe_rotation_hpng_reference = geompy.MakeLineTwoPnt(
+    vertex_xyz(x_axe_rotation, -demi_largeur_axe, z_rotation),
+    vertex_xyz(x_axe_rotation, demi_largeur_axe, z_rotation),
+)
+axe_rotation_hpng = translater_scene(axe_rotation_hpng_reference)
+geompy.addToStudy(axe_rotation_hpng, "axe_rotation_h_png_70deg")
+
+
+def x_apres_rotation_vanne(x, z):
+    return (
+        x_axe_rotation
+        + (x - x_axe_rotation) * math.cos(angle_vanne)
+        + (z - z_rotation) * math.sin(angle_vanne)
+    )
+
+
+def z_apres_rotation_vanne(x, z):
+    return (
+        z_rotation
+        - (x - x_axe_rotation) * math.sin(angle_vanne)
+        + (z - z_rotation) * math.cos(angle_vanne)
+    )
+
+
+z_orifice = COTES_DICT.get("z_orifice", COTES_DICT.get("aG", 0.0))
+z_volet = COTES_DICT["z_volet"]
+z_pale_bas = COTES_DICT["z_pale_bas"]
+z_haut = COTES_DICT["z_haut"]
+largeur_pale = max(abs(y) for _, name, points in ELEMENTS if name in NOMS_FACES_VANNE for y, _ in points) * 2.0
+if POSITION_VANNE == "ouverte":
+    x_surverse_ouverte = x_apres_rotation_vanne(0.0, z_haut)
+    z_surverse_bas_ouverte = z_apres_rotation_vanne(0.0, z_haut)
+    faces_debit = [
+        (
+            "Surverse_debit",
+            geompy.MakeTranslation(
+                face_debit_surverse_sans_joues(
+                    z_surverse_bas_ouverte,
+                    z_haut,
+                    largeur_pale,
+                ),
+                x_surverse_ouverte,
+                0.0,
+                0.0,
+            ),
+        ),
+        ("Seuil_debit", face_debit_rectangulaire(z_volet, z_pale_bas, largeur_pale)),
+        (
+            "orifice_debit",
+            face_debit_orifice_circulaire_ouverte(
+                COTES_DICT.get("z_axe_bas", COTES_DICT.get("y_axe_bas", z_orifice)),
+                largeur_pale,
+            )
+            if SECTION == "circulaire"
+            else face_debit_orifice_sans_joues(
+                z_orifice,
+                COTES_DICT.get("z_axe_bas", COTES_DICT.get("y_axe_bas", z_orifice)),
+                COTES_DICT.get("z_axe_bas", COTES_DICT.get("y_axe_bas", z_orifice)),
+                COTES_DICT.get("b_s", COTES_DICT.get("b_G", 2.0 * demi_largeur_conduite(z_orifice))),
+                largeur_pale,
+            ),
+        ),
+    ]
+    faces_debit = [
+        (
+            nom_face_debit,
+            geompy.MakeRotation(face_debit, axe_rotation_hpng_reference, angle_vanne)
+            if face_debit is not None and nom_face_debit == "Seuil_debit"
+            else face_debit,
+        )
+        for nom_face_debit, face_debit in faces_debit
+    ]
 else:
-    assemblage = geompy.MakeCompound(objets)
+    faces_debit = [
+        ("Surverse_debit", face_debit_surverse(z_haut)),
+        ("Seuil_debit", face_debit_rectangulaire(z_volet, z_pale_bas, largeur_pale)),
+        ("orifice_debit", face_debit_orifice(z_orifice)),
+    ]
+for nom_face_debit, face_debit in faces_debit:
+    if face_debit is not None:
+        geompy.addToStudy(translater_scene(face_debit), nom_face_debit)
+
+for name, face in faces_nommees:
+    if name not in NOMS_FACES_VANNE:
+        continue
+    solide = extruder_x(face, EPAISSEUR_VANNE_X)
+    if POSITION_VANNE == "fermee":
+        solides_vanne_fermee.append(solide)
+    else:
+        solide_oriente = geompy.MakeRotation(solide, axe_rotation_hpng_reference, angle_vanne)
+        solides_vanne_ouverte.append(solide_oriente)
+
+if solides_vanne_fermee:
+    try:
+        vanne_fermee = geompy.MakeFuseList(solides_vanne_fermee, True, True)
+    except Exception:
+        vanne_fermee = geompy.MakeCompound(solides_vanne_fermee)
+    vanne_fermee = translater_scene(vanne_fermee)
+    objets_solides.append(vanne_fermee)
+    geompy.addToStudy(vanne_fermee, "vanne_fermee")
+
+if solides_vanne_ouverte:
+    try:
+        vanne_ouverte = geompy.MakeFuseList(solides_vanne_ouverte, True, True)
+    except Exception:
+        vanne_ouverte = geompy.MakeCompound(solides_vanne_ouverte)
+    vanne_ouverte = translater_scene(vanne_ouverte)
+    objets_solides.append(vanne_ouverte)
+    geompy.addToStudy(vanne_ouverte, "vanne_ouverte")
+
+if points_vanne and faces_joues:
+    longueur_volet_ouvert = (
+        COTES_DICT["P_w"]
+        + COTES_DICT["a_w"]
+        + COTES_DICT["L_up"]
+    )
+    longueur_joue = longueur_volet_ouvert * math.sin(angle_vanne) + MARGE_AVAL_JOUE
+    solides_joues = [extruder_x(face, longueur_joue) for face in faces_joues]
+    try:
+        joues_laterales = geompy.MakeFuseList(solides_joues, True, True)
+    except Exception:
+        joues_laterales = geompy.MakeCompound(solides_joues)
+    bati_solide = joues_laterales
+
+if bati_solide is not None:
+    traits_bati = list(traits_construction)
+    if longueur_joue is not None:
+        for name, points in LIGNES:
+            if name == "trait_orifice" and len(points) >= 2:
+                traits_bati.append(
+                    line_xyz_from_points(
+                        [
+                            (longueur_joue, points[0][0], points[0][1]),
+                            (longueur_joue, points[-1][0], points[-1][1]),
+                        ]
+                    )
+                )
+                break
+    bati_elements = [bati_solide] + traits_bati
+    bati = geompy.MakeCompound(bati_elements)
+    bati = translater_scene(bati)
+    objets_solides.append(bati)
+    geompy.addToStudy(bati, "bati")
+
+if objets_2d:
+    coupe_2d = geompy.MakeCompound(objets_2d)
+    coupe_2d = translater_scene(coupe_2d)
+    geompy.addToStudy(coupe_2d, "coupe_2D_" + SECTION)
+
+if objets_solides:
+    assemblage = geompy.MakeCompound(objets_solides)
+else:
+    assemblage = geompy.MakeCompound(objets_2d)
 geompy.addToStudy(assemblage, "VSR_" + SECTION)
 
 if salome.sg.hasDesktop():
@@ -2076,7 +2752,15 @@ def _format_salome_points(points: list[tuple[float, float]]) -> str:
 
 # --- Interface utilisateur Excel ---
 
-COLONNES_MODELE = ["section", "DN", "aG", "bG", "rapport_seuil", "rapport_basculement"]
+COLONNES_MODELE = [
+    "section",
+    "DN",
+    "aG",
+    "bG",
+    "rapport_seuil",
+    "rapport_basculement",
+    "position_vanne",
+]
 PARAMETRES_MODELE = [
     ("section", "Circulaire"),
     ("DN", 1.5),
@@ -2084,6 +2768,7 @@ PARAMETRES_MODELE = [
     ("bG", 0.6),
     ("rapport_seuil", ""),
     ("rapport_basculement", ""),
+    ("position_vanne", "ouverte"),
 ]
 
 
@@ -2095,6 +2780,7 @@ class ParametresVanne:
     bG: float | None
     rapport_seuil: float | None
     rapport_basculement: float | None
+    position_vanne: str = "ouverte"
 
 
 def normaliser_nom(valeur: object) -> str:
@@ -2111,6 +2797,15 @@ def normaliser_section(valeur: object) -> str:
     if section in {"ovoide", "ovo", "ov"}:
         return "ovoide"
     raise ValueError("La section doit etre 'circulaire' ou 'ovoide'.")
+
+
+def normaliser_position_vanne(valeur: object) -> str:
+    position = normaliser_nom("ouverte" if valeur in (None, "") else valeur)
+    if position in {"ouverte", "ouvert", "open"}:
+        return "ouverte"
+    if position in {"fermee", "ferme", "fermee", "closed"}:
+        return "fermee"
+    raise ValueError("La position de vanne doit etre 'ouverte' ou 'fermee'.")
 
 
 def convertir_float(valeur: object, nom: str, obligatoire: bool = True) -> float | None:
@@ -2162,8 +2857,11 @@ def lire_parametres_xlsx(chemin: str | Path) -> ParametresVanne:
         "rapport_basculement",
         obligatoire=False,
     )
+    position_vanne = normaliser_position_vanne(
+        _valeur(ligne, "position_vanne", "position", "vanne", "etat_vanne", "ouverture")
+    )
 
-    return ParametresVanne(section, DN, aG, bG, rapport_seuil, rapport_basculement)
+    return ParametresVanne(section, DN, aG, bG, rapport_seuil, rapport_basculement, position_vanne)
 
 
 def _est_format_vertical(lignes: list[list[object]]) -> bool:
@@ -2284,7 +2982,11 @@ def construire_depuis_parametres(parametres: ParametresVanne, dossier_sortie: st
         ).construire()
         csv = exporter_csv_circulaire(construction, chemin_csv)
         png = tracer_circulaire(construction, chemin_png)
-        salome_py = exporter_salome_circulaire(construction, chemin_salome)
+        salome_py = exporter_salome_circulaire(
+            construction,
+            chemin_salome,
+            parametres.position_vanne,
+        )
     else:
         construction = ConstructeurVanneOvoide(
             T=parametres.DN,
@@ -2294,7 +2996,11 @@ def construire_depuis_parametres(parametres: ParametresVanne, dossier_sortie: st
         ).construire()
         csv = exporter_csv_ovoide(construction, chemin_csv)
         png = tracer_ovoide(construction, chemin_png)
-        salome_py = exporter_salome_ovoide(construction, chemin_salome)
+        salome_py = exporter_salome_ovoide(
+            construction,
+            chemin_salome,
+            parametres.position_vanne,
+        )
 
     for alerte in construction.alertes:
         print(f"ALERTE: {alerte}")
@@ -2333,7 +3039,8 @@ def nom_base_sortie(parametres: ParametresVanne) -> str:
     bG = "auto" if parametres.bG is None else _format_nombre(parametres.bG)
     nom = (
         f"VSR_{parametres.section}_DN{_format_nombre(parametres.DN)}_"
-        f"aG{_format_nombre(parametres.aG)}_bG{bG}_{VERSION_PROGRAMME}"
+        f"aG{_format_nombre(parametres.aG)}_bG{bG}_"
+        f"{parametres.position_vanne}_{VERSION_PROGRAMME}"
     )
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", nom)
 
@@ -2380,9 +3087,12 @@ def _feuille(lignes: list[list[object]]) -> str:
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<sheetData>{"".join(rows)}</sheetData>'
-        '<dataValidations count="1">'
+        '<dataValidations count="2">'
         '<dataValidation type="list" allowBlank="0" showErrorMessage="1" sqref="B2">'
         '<formula1>"Ovoide,Circulaire"</formula1>'
+        '</dataValidation>'
+        '<dataValidation type="list" allowBlank="0" showErrorMessage="1" sqref="B8">'
+        '<formula1>"ouverte,fermee"</formula1>'
         '</dataValidation>'
         '</dataValidations>'
         '</worksheet>'
