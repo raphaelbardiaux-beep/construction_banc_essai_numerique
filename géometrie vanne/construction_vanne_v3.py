@@ -2055,10 +2055,12 @@ def _points_rectangle_centre_dans_cercle_avec_orifice(
     demi_orifice = largeur_orifice / 2.0
     if demi > circulaire.rayon:
         raise ValueError("La demi-largeur du volet depasse le rayon de la conduite.")
-    if demi_orifice > demi:
-        raise ValueError("La demi-largeur de l'orifice depasse celle du volet.")
 
     y_bas_cote = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - demi**2))
+    if demi_orifice >= demi:
+        y_bas = max(hauteur_orifice, y_bas_cote)
+        return [(-demi, y_haut), (demi, y_haut), (demi, y_bas), (-demi, y_bas)]
+
     y_bas_orifice = circulaire.rayon - math.sqrt(max(0.0, circulaire.rayon**2 - demi_orifice**2))
     if hauteur_orifice <= y_bas_orifice:
         return _points_rectangle_centre_dans_cercle(circulaire, y_haut, largeur, nb_points)
